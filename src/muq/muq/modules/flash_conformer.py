@@ -54,6 +54,102 @@ logger = logging.get_logger(__name__)
 _HIDDEN_STATES_START_POSITION = 2
 
 
+_SDPA_BACKEND_NAMES = {
+    -1: "error",
+    0: "math",
+    1: "flash_attention",
+    2: "efficient_attention",
+    3: "cudnn_attention",
+    4: "overrideable",
+}
+
+
+def _selected_sdpa_backend(
+    query,
+    key=None,
+    value=None,
+    attention_mask=None,
+    dropout_p=0.0,
+    is_causal=False,
+):
+    """Return the kernel selected by PyTorch for these concrete SDPA inputs."""
+    key = query if key is None else key
+    value = key if value is None else value
+
+    # PyTorch does not implement aten::_fused_sdp_choice on MPS. Its native
+    # SDPA entry point currently dispatches to _scaled_dot_product_attention_math_for_mps.
+    if query.device.type == "mps":
+        return "math_for_mps"
+
+    try:
+        choice = torch._fused_sdp_choice(
+            query,
+            key,
+            value,
+            attention_mask,
+            dropout_p,
+            is_causal,
+        )
+    except (AttributeError, NotImplementedError, RuntimeError):
+        return "unavailable"
+    return _SDPA_BACKEND_NAMES.get(choice, f"unknown_{choice}")
+
+
+def backend_available(
+    backend,
+    query,
+    key=None,
+    value=None,
+    attention_mask=None,
+    dropout_p=0.0,
+    is_causal=False,
+):
+    """Check whether PyTorch SDPA will select ``backend`` for concrete inputs.
+
+    ``backend`` accepts ``sdpa``, ``flash_attention``, ``efficient_attention``,
+    ``cudnn_attention``, ``math``, and ``math_for_mps``. This checks actual
+    dispatch constraints such as device, dtype, head dimension, mask, and
+    dropout instead of only checking whether a global backend flag is enabled.
+    """
+    aliases = {
+        "flash": "flash_attention",
+        "mem_efficient": "efficient_attention",
+        "memory_efficient": "efficient_attention",
+        "cudnn": "cudnn_attention",
+    }
+    backend = aliases.get(backend, backend)
+    valid_backends = {
+        "sdpa",
+        "flash_attention",
+        "efficient_attention",
+        "cudnn_attention",
+        "math",
+        "math_for_mps",
+        "overrideable",
+    }
+    if backend not in valid_backends:
+        raise ValueError(
+            f"Unknown PyTorch SDPA backend {backend!r}; expected one of "
+            f"{sorted(valid_backends)}"
+        )
+
+    selected = _selected_sdpa_backend(
+        query,
+        key=key,
+        value=value,
+        attention_mask=attention_mask,
+        dropout_p=dropout_p,
+        is_causal=is_causal,
+    )
+    if backend == "sdpa":
+        return selected not in {"error", "unavailable"} and not selected.startswith(
+            "unknown_"
+        )
+    if backend == "math":
+        return selected in {"math", "math_for_mps"}
+    return selected == backend
+
+
 def _bidirectional_mask_function(batch_idx, head_idx, query_idx, key_value_idx):
     """Allow every query to attend every non-padding key."""
     return query_idx >= 0

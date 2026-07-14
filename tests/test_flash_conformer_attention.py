@@ -13,7 +13,9 @@ from transformers.models.wav2vec2_conformer.configuration_wav2vec2_conformer imp
 from muq.muq.modules.flash_conformer import (
     Wav2Vec2ConformerEncoder,
     Wav2Vec2ConformerSelfAttention,
+    _selected_sdpa_backend,
     _prepare_bidirectional_attention_mask,
+    backend_available,
 )
 
 
@@ -105,6 +107,16 @@ def benchmark_full_encoder(implementation, device):
         device=device,
         dtype=torch.float16,
     )
+    if implementation == "sdpa":
+        query = hidden_states.view(1, 750, 16, 64).transpose(1, 2)
+        actual_backend = _selected_sdpa_backend(query)
+        if not backend_available(actual_backend, query):
+            raise RuntimeError(
+                f"Reported SDPA backend {actual_backend!r} is not available"
+            )
+        del query
+    else:
+        actual_backend = implementation
 
     with torch.inference_mode():
         for _ in range(2):
@@ -145,6 +157,7 @@ def benchmark_full_encoder(implementation, device):
             )
         metrics = {
             "implementation": implementation,
+            "actual_backend": actual_backend,
             "allocated_before": allocated_before,
             "allocated_after": allocated_after,
             "allocated_delta": allocated_after - allocated_before,
@@ -164,6 +177,15 @@ def benchmark_full_encoder(implementation, device):
 
 
 class FlashConformerAttentionTest(unittest.TestCase):
+    def test_backend_available_reports_concrete_sdpa_dispatch(self):
+        query = torch.randn(1, 2, 5, 4)
+        selected = _selected_sdpa_backend(query)
+
+        self.assertTrue(backend_available("sdpa", query))
+        self.assertTrue(backend_available(selected, query))
+        with self.assertRaisesRegex(ValueError, "Unknown PyTorch SDPA backend"):
+            backend_available("not_a_backend", query)
+
     def test_sdpa_preserves_batch_time_head_dimensions_and_gradients(self):
         torch.manual_seed(3)
         module = Wav2Vec2ConformerSelfAttention(attention_config()).eval()
@@ -405,7 +427,8 @@ class FlashConformerAttentionTest(unittest.TestCase):
         for metrics in (eager_metrics, sdpa_metrics):
             print(
                 "muq_large_attention_backend "
-                f"implementation={metrics['implementation']} "
+                f"configured_backend={metrics['implementation']} "
+                f"actual_backend={metrics['actual_backend']} "
                 f"allocated_before={metrics['allocated_before']} "
                 f"allocated_after={metrics['allocated_after']} "
                 f"allocated_delta={metrics['allocated_delta']} "
