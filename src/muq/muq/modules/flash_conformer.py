@@ -27,6 +27,7 @@ from torch.nn import functional as F
 
 from transformers.activations import ACT2FN
 from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
+from transformers.masking_utils import ALL_MASK_ATTENTION_FUNCTIONS
 from transformers.modeling_outputs import (
     BaseModelOutput,
     CausalLMOutput,
@@ -35,7 +36,7 @@ from transformers.modeling_outputs import (
     Wav2Vec2BaseModelOutput,
     XVectorOutput,
 )
-from transformers.modeling_utils import PreTrainedModel
+from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from transformers.utils import (
     ModelOutput,
     add_code_sample_docstrings,
@@ -51,6 +52,65 @@ logger = logging.get_logger(__name__)
 
 
 _HIDDEN_STATES_START_POSITION = 2
+
+
+def _bidirectional_mask_function(batch_idx, head_idx, query_idx, key_value_idx):
+    """Allow every query to attend every non-padding key."""
+    return query_idx >= 0
+
+
+def _resolve_attention_implementation(config) -> str:
+    implementation = getattr(config, "_attn_implementation", None) or "sdpa"
+    config._attn_implementation = implementation
+
+    if implementation != "eager" and implementation not in ALL_ATTENTION_FUNCTIONS.valid_keys():
+        raise ValueError(
+            f"Unknown attention implementation {implementation!r}; expected 'eager' or one of "
+            f"{sorted(ALL_ATTENTION_FUNCTIONS.valid_keys())}"
+        )
+    if implementation not in ALL_MASK_ATTENTION_FUNCTIONS.valid_keys():
+        raise ValueError(
+            f"Attention implementation {implementation!r} has no registered attention-mask formatter"
+        )
+    return implementation
+
+
+def _prepare_bidirectional_attention_mask(config, attention_mask, hidden_states):
+    """Format a 2D MuQ padding mask for the configured HF attention backend."""
+    if attention_mask is None:
+        return None
+    if attention_mask.ndim != 2:
+        raise ValueError(
+            "attention_mask must have shape [batch_size, sequence_length], "
+            f"got {tuple(attention_mask.shape)}"
+        )
+    if attention_mask.shape != hidden_states.shape[:2]:
+        raise ValueError(
+            "attention_mask shape must match the first two hidden-state dimensions, "
+            f"got mask={tuple(attention_mask.shape)} and hidden_states={tuple(hidden_states.shape)}"
+        )
+
+    attention_mask = attention_mask.to(device=hidden_states.device, dtype=torch.bool)
+    if bool(attention_mask.all()):
+        return None
+
+    implementation = _resolve_attention_implementation(config)
+    mask_interface = ALL_MASK_ATTENTION_FUNCTIONS[implementation]
+    formatted_mask = mask_interface(
+        batch_size=hidden_states.shape[0],
+        cache_position=torch.arange(hidden_states.shape[1], device=hidden_states.device),
+        kv_length=hidden_states.shape[1],
+        mask_function=_bidirectional_mask_function,
+        attention_mask=attention_mask,
+        allow_is_causal_skip=False,
+        dtype=hidden_states.dtype,
+        config=config,
+    )
+    if formatted_mask is None:
+        raise RuntimeError(
+            f"Attention-mask formatter for {implementation!r} dropped a padding mask"
+        )
+    return formatted_mask
 
 # General docstring
 _CONFIG_FOR_DOC = "Wav2Vec2ConformerConfig"
@@ -631,6 +691,34 @@ class Wav2Vec2ConformerConvolutionModule(nn.Module):
         return hidden_states
 
 
+def eager_attention_forward(
+    module,
+    query,
+    key,
+    value,
+    attention_mask,
+    scaling=None,
+    dropout=0.0,
+    **kwargs,
+):
+    """Reference Conformer attention following the HF AttentionInterface contract."""
+    if scaling is None:
+        scaling = query.shape[-1] ** -0.5
+    probabilities = torch.matmul(query, key.transpose(2, 3)) * scaling
+    if attention_mask is not None:
+        if attention_mask.dtype == torch.bool:
+            probabilities = probabilities.masked_fill(
+                ~attention_mask,
+                torch.finfo(probabilities.dtype).min,
+            )
+        else:
+            probabilities = probabilities + attention_mask
+    probabilities = torch.softmax(probabilities, dim=-1)
+    probabilities = F.dropout(probabilities, p=dropout, training=module.training)
+    hidden_states = torch.matmul(probabilities, value)
+    return hidden_states.transpose(1, 2).contiguous(), probabilities
+
+
 class Wav2Vec2ConformerSelfAttention(nn.Module):
     """Construct an Wav2Vec2ConformerSelfAttention object.
     Can be enhanced with rotary or relative position embeddings.
@@ -639,6 +727,13 @@ class Wav2Vec2ConformerSelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
 
+        if config.hidden_size % config.num_attention_heads != 0:
+            raise ValueError(
+                f"hidden_size ({config.hidden_size}) must be divisible by "
+                f"num_attention_heads ({config.num_attention_heads})"
+            )
+        self.config = config
+        self.attention_implementation = _resolve_attention_implementation(config)
         self.head_size = config.hidden_size // config.num_attention_heads
         self.num_heads = config.num_attention_heads
         self.position_embeddings_type = config.position_embeddings_type
@@ -692,23 +787,30 @@ class Wav2Vec2ConformerSelfAttention(nn.Module):
         key = key.transpose(1, 2)
         value = value.transpose(1, 2)
 
-        with torch.backends.cuda.sdp_kernel(enable_math=False, enable_flash=True, enable_mem_efficient=False):
-            hidden_states = F.scaled_dot_product_attention(query, key, value, attn_mask=attention_mask, dropout_p=self.dropout_p, is_causal=self.is_causal)
-        probs = None
+        attention_interface = eager_attention_forward
+        if self.attention_implementation != "eager":
+            attention_interface = ALL_ATTENTION_FUNCTIONS[self.attention_implementation]
 
-        # # apply attention_mask if necessary
-        # if attention_mask is not None:
-        #     scores = scores + attention_mask
+        hidden_states, probs = attention_interface(
+            self,
+            query,
+            key,
+            value,
+            attention_mask,
+            dropout=self.dropout_p if self.training else 0.0,
+            scaling=self.head_size**-0.5,
+            is_causal=False,
+            output_attentions=output_attentions,
+        )
+        expected_shape = (batch_size, sequence_length, self.num_heads, self.head_size)
+        if hidden_states.shape != expected_shape:
+            raise RuntimeError(
+                f"Attention backend {self.attention_implementation!r} returned shape "
+                f"{tuple(hidden_states.shape)}, expected {expected_shape}"
+            )
 
-        # # => (batch, head, time1, time2)
-        # probs = torch.softmax(scores, dim=-1)
-        # probs = self.dropout(probs)
-
-        # # => (batch, head, time1, d_k)
-        # hidden_states = torch.matmul(probs, value)
-
-        # => (batch, time1, hidden_size)
-        hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, self.num_heads * self.head_size)
+        # HF attention backends return (batch, time, head, head_dim).
+        hidden_states = hidden_states.reshape(batch_size, sequence_length, hidden_size)
         hidden_states = self.linear_out(hidden_states)
 
         return hidden_states, probs
@@ -843,6 +945,7 @@ class Wav2Vec2ConformerEncoder(nn.Module):
     def __init__(self, config, is_causal=False):
         super().__init__()
         config.is_causal = is_causal
+        _resolve_attention_implementation(config)
         self.config = config
 
         if config.position_embeddings_type == "relative":
@@ -870,15 +973,20 @@ class Wav2Vec2ConformerEncoder(nn.Module):
         all_self_attentions = () if output_attentions else None
 
         if attention_mask is not None:
+            if attention_mask.ndim != 2:
+                raise ValueError(
+                    "attention_mask must have shape [batch_size, sequence_length], "
+                    f"got {tuple(attention_mask.shape)}"
+                )
+            attention_mask = attention_mask.to(device=hidden_states.device, dtype=torch.bool)
             # make sure padded tokens output 0
             hidden_states[~attention_mask] = 0.0
 
-            # extend attention_mask
-            attention_mask = 1.0 - attention_mask[:, None, None, :].to(dtype=hidden_states.dtype)
-            attention_mask = attention_mask * torch.finfo(hidden_states.dtype).min
-            attention_mask = attention_mask.expand(
-                attention_mask.shape[0], 1, attention_mask.shape[-1], attention_mask.shape[-1]
-            )
+        attention_mask = _prepare_bidirectional_attention_mask(
+            self.config,
+            attention_mask,
+            hidden_states,
+        )
 
         hidden_states = self.dropout(hidden_states)
 

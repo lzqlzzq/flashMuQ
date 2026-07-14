@@ -15,7 +15,7 @@ setup(
         "torch", 
         "torchaudio", 
         "tqdm", 
-        "transformers", 
+        "transformers>=4.57.3,<5",
         "easydict",
         "x_clip", 
     ],
