@@ -2,6 +2,7 @@ import gc
 import statistics
 import time
 import unittest
+import warnings
 
 import torch
 from easydict import EasyDict
@@ -269,11 +270,26 @@ class FlashConformerAttentionTest(unittest.TestCase):
         padding_mask = torch.tensor(
             [[True, True, True, False, False], [True, True, True, True, False]]
         )
-        flex_mask = _prepare_bidirectional_attention_mask(
-            attention_config("flex_attention"),
-            padding_mask.cuda(),
-            hidden_states.cuda(),
-        )
+        # Transformers 4.57 still passes create_block_mask(_compile=True),
+        # which is deprecated by newer PyTorch. Compiling that dependency code
+        # also imports a legacy PyTorch script_method. Keep these two upstream
+        # compatibility warnings local to the Flex formatter call.
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r"_compile flag on create_block_mask.*",
+                category=DeprecationWarning,
+            )
+            warnings.filterwarnings(
+                "ignore",
+                message=r"`torch\.jit\.script_method` is deprecated.*",
+                category=DeprecationWarning,
+            )
+            flex_mask = _prepare_bidirectional_attention_mask(
+                attention_config("flex_attention"),
+                padding_mask.cuda(),
+                hidden_states.cuda(),
+            )
         self.assertIsInstance(flex_mask, BlockMask)
 
     def test_padding_keys_receive_zero_attention_probability(self):
