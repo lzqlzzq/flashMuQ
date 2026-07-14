@@ -5,8 +5,8 @@ from einops import rearrange, repeat, reduce
 from einops.layers.torch import Rearrange
 from torchaudio.transforms import Spectrogram, TimeStretch, FrequencyMasking, TimeMasking
 from transformers import Wav2Vec2FeatureExtractor,AutoModel
-from ..modules.transformer import Transformer, LayerNorm, posemb_sincos_2d
-from ..modules.utils import print_once, round_down_nearest_multiple, frozen_params, Sequential
+from muq.muq_mulan.modules.transformer import Transformer, LayerNorm, posemb_sincos_2d
+from muq.muq_mulan.modules.utils import print_once, round_down_nearest_multiple, frozen_params, Sequential
 
 
 def pair(t):
@@ -291,4 +291,3 @@ class AudioSpectrogramTransformerPretrained(nn.Module):
             return outputs, layer_results
         return outputs
 
-  

@@ -1,6 +1,6 @@
 import torch.nn as nn
 import torch
-from .models.muq_model import MuQModel
+from muq.muq.models.muq_model import MuQModel
 from dataclasses import dataclass, field
 from typing import List, Optional
 from transformers.modeling_outputs import BaseModelOutput

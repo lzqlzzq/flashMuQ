@@ -7,9 +7,9 @@ from x_clip.tokenizer import tokenizer
 from einops import rearrange, repeat, reduce, pack, unpack
 from transformers import AutoTokenizer,XLMRobertaModel,AutoModelForCausalLM
 
-from ..modules.utils import *
-from ..modules.transformer import Transformer, LayerNorm
-from ..modules.utils import frozen_params
+from muq.muq_mulan.modules.utils import *
+from muq.muq_mulan.modules.transformer import Transformer, LayerNorm
+from muq.muq_mulan.modules.utils import frozen_params
 
 
 # text transformer

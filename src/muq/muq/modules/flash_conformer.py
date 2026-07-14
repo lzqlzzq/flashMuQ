@@ -26,7 +26,7 @@ from torch.nn import CrossEntropyLoss
 from torch.nn import functional as F
 
 from transformers.activations import ACT2FN
-from transformers.deepspeed import is_deepspeed_zero3_enabled
+from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
 from transformers.modeling_outputs import (
     BaseModelOutput,
     CausalLMOutput,

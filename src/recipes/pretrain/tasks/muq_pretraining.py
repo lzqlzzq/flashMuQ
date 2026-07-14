@@ -20,8 +20,8 @@ from fairseq.tasks import register_task
 from fairseq.tasks.fairseq_task import FairseqTask
 from omegaconf import MISSING
 
-from ..data.mert_dataset import MERTDataset
-from ..data.ark_dataset import ArkDataset
+from recipes.pretrain.data.mert_dataset import MERTDataset
+from recipes.pretrain.data.ark_dataset import ArkDataset
 
 logger = logging.getLogger(__name__)
 

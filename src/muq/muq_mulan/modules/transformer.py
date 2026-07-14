@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch
 from einops import rearrange
-from .utils import l2norm, default, exists
+from muq.muq_mulan.modules.utils import l2norm, default, exists
 
 # 2d sinusoidal positional embedding
 # simple vit paper shows it is good enough compared to learned

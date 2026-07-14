@@ -10,10 +10,10 @@ from einops import rearrange
 from huggingface_hub import PyTorchModelHubMixin
 from easydict import EasyDict
 
-from .models.mulan import MuLanModel
-from .models.audio import AudioSpectrogramTransformerPretrained
-from .models.text import TextTransformerPretrained
-from .modules.utils import exists, frozen_params
+from muq.muq_mulan.models.mulan import MuLanModel
+from muq.muq_mulan.models.audio import AudioSpectrogramTransformerPretrained
+from muq.muq_mulan.models.text import TextTransformerPretrained
+from muq.muq_mulan.modules.utils import exists, frozen_params
 
 
 @dataclass
@@ -268,4 +268,3 @@ class MuQMuLan(nn.Module, PyTorchModelHubMixin):
             audio_clips.append(torch.cat([audio[accum_length:], audio[0:delta - (origin_length - accum_length)]]))
 
         return torch.stack(audio_clips, dim=0)
-

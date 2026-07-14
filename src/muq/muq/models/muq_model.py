@@ -6,9 +6,9 @@ from einops import rearrange
 import os
 from easydict import EasyDict
 
-from ..modules.random_quantizer import RandomProjectionQuantizer
-from ..modules.features import MelSTFT
-from ..modules.conv import Conv2dSubsampling
+from muq.muq.modules.random_quantizer import RandomProjectionQuantizer
+from muq.muq.modules.features import MelSTFT
+from muq.muq.modules.conv import Conv2dSubsampling
 
 class MuQModel(nn.Module):
 
@@ -66,7 +66,7 @@ class MuQModel(nn.Module):
         seed = 142
         if self.use_rvq_like_target:
             if use_rvq_target:
-                from ..modules.rvq import ResidualVectorQuantize
+                from muq.muq.modules.rvq import ResidualVectorQuantize
         
                 inp_dim = 128*self.n_fold
                 self.rvq = ResidualVectorQuantize(
@@ -78,7 +78,7 @@ class MuQModel(nn.Module):
                     use_multi_layer_num = rvq_multi_layer_num,
                     )
             elif use_vq_target:
-                from ..modules.rvq import VectorQuantize
+                from muq.muq.modules.rvq import VectorQuantize
                 
                 self.rvq = VectorQuantize(
                     input_dim = 128*self.n_fold,
@@ -122,7 +122,7 @@ class MuQModel(nn.Module):
 
         # Conformer
         if is_flash:
-            from modules.flash_conformer import (
+            from muq.muq.modules.flash_conformer import (
                 Wav2Vec2ConformerEncoder,
                 Wav2Vec2ConformerConfig,
             )

@@ -6,10 +6,10 @@ from functools import partial
 import torch
 from torch import nn, einsum
 
-from .audio import AudioSpectrogramTransformer, AudioSpectrogramTransformerPretrained
-from .text import TextTransformer, TextTransformerPretrained
-from ..modules.contrastive import RankSoftmaxContrastiveLearning, SoftmaxContrastiveLearning, SigmoidContrastiveLearning, MultiLayerContrastiveLoss, interspersed_indices
-from ..modules.utils import exists, default, l2norm
+from muq.muq_mulan.models.audio import AudioSpectrogramTransformer, AudioSpectrogramTransformerPretrained
+from muq.muq_mulan.models.text import TextTransformer, TextTransformerPretrained
+from muq.muq_mulan.modules.contrastive import RankSoftmaxContrastiveLearning, SoftmaxContrastiveLearning, SigmoidContrastiveLearning, MultiLayerContrastiveLoss, interspersed_indices
+from muq.muq_mulan.modules.utils import exists, default, l2norm
 
 class MuLanModel(nn.Module):
     def __init__(
@@ -145,4 +145,4 @@ class MuLanModel(nn.Module):
             text_layers = text_layers
         )
 
-        return cl_loss + hierarchical_cl_loss 
+        return cl_loss + hierarchical_cl_loss

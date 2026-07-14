@@ -8,10 +8,10 @@ from einops import rearrange, reduce
 from torch import einsum
 import torch.distributed as dist
 
-from .utils import exists, l2norm, log, print_once
-from .distributed import AllGather
-from .extend_distributed import all_gather
-from .transformer import LayerNorm
+from muq.muq_mulan.modules.utils import exists, l2norm, log, print_once
+from muq.muq_mulan.modules.distributed import AllGather
+from muq.muq_mulan.modules.extend_distributed import all_gather
+from muq.muq_mulan.modules.transformer import LayerNorm
 
 def matrix_diag(t):
     device = t.device

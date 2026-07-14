@@ -1,1 +1,1 @@
-from .muq import MuQConfig, MuQ
+from muq.muq.muq import MuQConfig, MuQ
