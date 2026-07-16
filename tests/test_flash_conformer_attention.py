@@ -18,6 +18,7 @@ from muq.muq.modules.flash_conformer import (
     _prepare_bidirectional_attention_mask,
     backend_available,
 )
+from muq.muq.models.muq_model import _prepare_conformer_attention_mask
 
 
 def attention_config(implementation="sdpa", dropout=0.0):
@@ -318,20 +319,90 @@ class FlashConformerAttentionTest(unittest.TestCase):
             atol=0.0,
         )
 
-    def test_none_and_all_valid_masks_may_skip_formatting(self):
+    def test_none_mask_skips_formatting(self):
         hidden_states = torch.randn(2, 5, 8)
         config = attention_config("sdpa")
 
         self.assertIsNone(
             _prepare_bidirectional_attention_mask(config, None, hidden_states)
         )
+
+    def test_all_valid_mask_is_normalized_before_conformer(self):
         self.assertIsNone(
-            _prepare_bidirectional_attention_mask(
-                config,
-                torch.ones(2, 5, dtype=torch.bool),
-                hidden_states,
+            _prepare_conformer_attention_mask(
+                torch.ones(2, 20, dtype=torch.bool),
+                sequence_length=5,
             )
         )
+
+        padding_mask = torch.tensor(
+            [
+                [True] * 12 + [False] * 8,
+                [True] * 16 + [False] * 4,
+            ]
+        )
+        expected = torch.tensor(
+            [
+                [True, True, True, False, False],
+                [True, True, True, True, False],
+            ]
+        )
+        torch.testing.assert_close(
+            _prepare_conformer_attention_mask(padding_mask, sequence_length=5),
+            expected,
+        )
+
+    def test_flash_formatter_does_not_inspect_nonempty_mask_values(self):
+        hidden_states = torch.randn(2, 5, 8)
+        padding_mask = torch.tensor(
+            [[True, True, True, False, False], [True, True, True, True, False]]
+        )
+
+        formatted_mask = _prepare_bidirectional_attention_mask(
+            attention_config("flash_attention_2"),
+            padding_mask,
+            hidden_states,
+        )
+
+        torch.testing.assert_close(formatted_mask, padding_mask)
+
+    def test_compiled_flash_formatter_caches_none_and_tensor_graphs(self):
+        config = attention_config("flash_attention_2")
+        compiled_graphs = []
+
+        def counting_backend(graph_module, example_inputs):
+            compiled_graphs.append(graph_module)
+            return graph_module.forward
+
+        def forward(hidden_states, attention_mask):
+            formatted_mask = _prepare_bidirectional_attention_mask(
+                config,
+                attention_mask,
+                hidden_states,
+            )
+            if formatted_mask is None:
+                return hidden_states.sin()
+            return hidden_states.masked_fill(~formatted_mask.unsqueeze(-1), 0.0)
+
+        compiled_forward = torch.compile(
+            forward,
+            backend=counting_backend,
+            fullgraph=True,
+        )
+        hidden_states = torch.randn(2, 5, 8)
+        first_padding_mask = torch.tensor(
+            [[True, True, True, False, False], [True, True, True, True, False]]
+        )
+        second_padding_mask = torch.tensor(
+            [[True, True, False, False, False], [True, True, True, False, False]]
+        )
+
+        compiled_forward(hidden_states, None)
+        compiled_forward(hidden_states, first_padding_mask)
+        compiled_forward(hidden_states, None)
+        compiled_forward(hidden_states, second_padding_mask)
+
+        self.assertEqual(len(compiled_graphs), 2)
 
     def test_padding_mask_cannot_be_silently_dropped(self):
         implementation = "test_dropped_padding_mask"

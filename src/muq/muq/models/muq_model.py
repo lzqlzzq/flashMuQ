@@ -10,6 +10,25 @@ from muq.muq.modules.random_quantizer import RandomProjectionQuantizer
 from muq.muq.modules.features import MelSTFT
 from muq.muq.modules.conv import Conv2dSubsampling
 
+
+def _prepare_conformer_attention_mask(attention_mask, sequence_length):
+    """Downsample and normalize a mask before entering the compiled Conformer."""
+    if attention_mask is None:
+        return None
+
+    attention_mask = attention_mask.bool()
+    skip_n = int(attention_mask.size(-1) / sequence_length)
+    attention_mask = attention_mask[:, ::skip_n]
+    attention_mask = attention_mask[:, :sequence_length]
+
+    # This value-dependent Python branch intentionally lives outside the
+    # compiled Conformer. Dynamo can then specialize the Conformer once for
+    # None and once for a padding-mask tensor without a graph break in either.
+    if bool(attention_mask.all()):
+        return None
+    return attention_mask
+
+
 class MuQModel(nn.Module):
 
     def __init__(
@@ -206,13 +225,13 @@ class MuQModel(nn.Module):
         """2-layer conv + w2v-conformer"""
         x = self.conv(x)
         mask_indices = None
+        attention_mask = _prepare_conformer_attention_mask(
+            attention_mask,
+            x.size(1),
+        )
         if attention_mask is None:
             out = self.conformer(x, output_hidden_states=True)
         else:
-            attention_mask = attention_mask.bool()
-            skip_n = int(attention_mask.size(-1) / x.size(1))
-            attention_mask = attention_mask[:, ::skip_n]
-            attention_mask = attention_mask[:, :x.size(1)]
             out = self.conformer(x, attention_mask=attention_mask, output_hidden_states=True)
         hidden_emb = out["hidden_states"]
         last_emb = out["last_hidden_state"]

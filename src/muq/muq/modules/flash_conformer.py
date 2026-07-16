@@ -186,11 +186,18 @@ def _prepare_bidirectional_attention_mask(config, attention_mask, hidden_states)
             f"got mask={tuple(attention_mask.shape)} and hidden_states={tuple(hidden_states.shape)}"
         )
 
-    attention_mask = attention_mask.to(device=hidden_states.device, dtype=torch.bool)
-    if bool(attention_mask.all()):
-        return None
-
     implementation = _resolve_attention_implementation(config)
+    attention_mask = attention_mask.to(device=hidden_states.device, dtype=torch.bool)
+
+    # FlashAttention consumes the 2D padding mask directly. The generic HF
+    # formatter checks ``attention_mask.all()`` in Python before returning it,
+    # which introduces a data-dependent graph break under torch.compile. Fully
+    # valid masks are normalized to None by MuQModel before the compiled
+    # Conformer boundary, so every non-None mask reaching this point can be
+    # forwarded without inspecting its values.
+    if implementation in {"flash_attention_2", "flash_attention_3"}:
+        return attention_mask
+
     mask_interface = ALL_MASK_ATTENTION_FUNCTIONS[implementation]
     formatted_mask = mask_interface(
         batch_size=hidden_states.shape[0],
